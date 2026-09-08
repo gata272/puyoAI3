@@ -54,7 +54,7 @@ jobs:
 
       - name: Build WASM
         run: |
-          emcc \
+          em++ \
             wasm/puyoAI.cpp \
             ai/ai.cpp \
             ai/gtr/gtr_ai.cpp \
