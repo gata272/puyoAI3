@@ -1,4 +1,4 @@
-name: Build WASM and Deploy
+name: Build WASM and Deploy to GitHub Pages
 
 on:
   push:
@@ -7,16 +7,20 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
   pages: write
   id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup Emscripten
@@ -24,10 +28,33 @@ jobs:
         with:
           version: latest
 
-      - name: Build WASM
-        shell: bash
+      - name: Check Emscripten
+        run: emcc --version
+
+      - name: Native smoke test
         run: |
-          em++ \
+          g++ \
+            -std=c++20 \
+            -O2 \
+            tests/test_native.cpp \
+            ai/ai.cpp \
+            ai/gtr/gtr_ai.cpp \
+            ai/search/move_generator.cpp \
+            ai/search/beam_search.cpp \
+            ai/simulation/board.cpp \
+            ai/simulation/simulator.cpp \
+            ai/evaluation/features.cpp \
+            ai/evaluation/evaluation.cpp \
+            ai/evaluation/weights.cpp \
+            ai/evaluation/forms.cpp \
+            -I. \
+            -o native_test
+
+          ./native_test
+
+      - name: Build WASM
+        run: |
+          emcc \
             wasm/puyoAI.cpp \
             ai/ai.cpp \
             ai/gtr/gtr_ai.cpp \
@@ -42,6 +69,7 @@ jobs:
             -std=c++20 \
             -O3 \
             -flto \
+            -I. \
             -sMODULARIZE=1 \
             -sEXPORT_ES6=1 \
             -sENVIRONMENT=worker \
@@ -50,10 +78,52 @@ jobs:
             -sEXPORTED_RUNTIME_METHODS='["ccall","cwrap"]' \
             -o puyoAI_wasm.mjs
 
-      - name: Upload WASM artifacts
-        uses: actions/upload-artifact@v4
+      - name: Verify WASM output
+        run: |
+          test -f puyoAI_wasm.mjs
+          test -f puyoAI_wasm.wasm
+          ls -lh puyoAI_wasm.mjs puyoAI_wasm.wasm
+
+      - name: Prepare Pages artifact
+        run: |
+          mkdir -p _site
+
+          # Copy the entire web application.
+          cp -r . _site/
+
+          # Remove files that should not be published.
+          rm -rf _site/.git
+          rm -rf _site/.github
+          rm -rf _site/tests
+          rm -rf _site/tools
+          rm -rf _site/build
+          rm -f _site/native_test
+
+          # Put the newly built WASM files in the site root.
+          cp puyoAI_wasm.mjs _site/puyoAI_wasm.mjs
+          cp puyoAI_wasm.wasm _site/puyoAI_wasm.wasm
+
+          echo "=== Pages artifact ==="
+          find _site -maxdepth 3 -type f | sort
+
+      - name: Setup GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
         with:
-          name: puyoAI-wasm
-          path: |
-            puyoAI_wasm.mjs
-            puyoAI_wasm.wasm
+          path: _site
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    runs-on: ubuntu-latest
+
+    needs: build
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
