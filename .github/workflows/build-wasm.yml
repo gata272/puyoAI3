@@ -1,0 +1,103 @@
+name: Build and Deploy PuyoAI3
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Emscripten
+        run: |
+          git clone https://github.com/emscripten-core/emsdk.git
+          cd emsdk
+          ./emsdk install latest
+          ./emsdk activate latest
+
+      - name: Build native AI smoke test
+        run: |
+          g++ -std=c++20 -O2 -I. \
+            tests/test_native.cpp \
+            ai/simulation/board.cpp \
+            ai/simulation/simulator.cpp \
+            ai/evaluation/features.cpp \
+            ai/evaluation/weights.cpp \
+            ai/evaluation/evaluation.cpp \
+            ai/search/move_generator.cpp \
+            ai/search/beam_search.cpp \
+            ai/gtr/gtr_ai.cpp \
+            ai/ai.cpp \
+            -o /tmp/puyoai3_test
+          /tmp/puyoai3_test
+
+      - name: Build WASM
+        shell: bash
+        run: |
+          source emsdk/emsdk_env.sh
+
+          emcc \
+            wasm/puyoAI.cpp \
+            ai/ai.cpp \
+            ai/gtr/gtr_ai.cpp \
+            ai/search/beam_search.cpp \
+            ai/search/move_generator.cpp \
+            ai/evaluation/evaluation.cpp \
+            ai/evaluation/features.cpp \
+            ai/evaluation/weights.cpp \
+            ai/simulation/simulator.cpp \
+            ai/simulation/board.cpp \
+            -std=c++20 \
+            -O3 \
+            -flto \
+            -sMODULARIZE=1 \
+            -sEXPORT_ES6=1 \
+            -sALLOW_MEMORY_GROWTH=1 \
+            -sENVIRONMENT=web,worker \
+            -sEXPORTED_FUNCTIONS='[
+              "_malloc",
+              "_free",
+              "_reset_ai",
+              "_set_board_cell",
+              "_ai_choose_move",
+              "_get_ai_pattern_name"
+            ]' \
+            -sEXPORTED_RUNTIME_METHODS='[
+              "cwrap"
+            ]' \
+            -o puyoAI_wasm.mjs
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
