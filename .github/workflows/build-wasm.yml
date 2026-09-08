@@ -50,7 +50,7 @@ jobs:
         run: |
           source emsdk/emsdk_env.sh
 
-          emcc \
+          em++ \
             wasm/puyoAI.cpp \
             ai/ai.cpp \
             ai/gtr/gtr_ai.cpp \
