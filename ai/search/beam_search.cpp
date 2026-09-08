@@ -32,7 +32,7 @@ double searchNode(
         if (depth < static_cast<int>(pieces.size())) {
             ctx.lookahead.assign(pieces.begin() + depth, pieces.end());
         }
-        ctx.quiescenceDepth = 1;
+        ctx.quiescenceDepth = 3;
         return evaluate(board, weights, ctx);
     }
 
@@ -55,11 +55,11 @@ double searchNode(
                 pieces.end()
             );
         }
-        ctx.quiescenceDepth = 1;
+        ctx.quiescenceDepth = (depth + 1 >= maxDepth) ? 3 : 0;
 
         double score =
             evaluate(sim.board, weights, ctx) +
-            actionPenalty(board, sim, weights);
+            actionPenalty(board, sim, move, weights);
 
         candidates.push_back({
             sim.board,
@@ -130,11 +130,11 @@ Move chooseRoot(
         if (pieces.size() > 1) {
             ctx.lookahead.assign(pieces.begin() + 1, pieces.end());
         }
-        ctx.quiescenceDepth = 1;
+        ctx.quiescenceDepth = 3;
 
         double score =
             evaluate(sim.board, weights, ctx) +
-            actionPenalty(board, sim, weights);
+            actionPenalty(board, sim, move, weights);
 
         if (pieces.size() > 1) {
             score += 0.85 * searchNode(
