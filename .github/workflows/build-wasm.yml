@@ -88,18 +88,18 @@ jobs:
         run: |
           mkdir -p _site
 
-          # Copy the entire web application.
-          cp -r . _site/
+          # Copy only the files/directories needed by the web application.
+          rsync -av \
+            --exclude='.git/' \
+            --exclude='.github/' \
+            --exclude='tests/' \
+            --exclude='tools/' \
+            --exclude='build/' \
+            --exclude='_site/' \
+            --exclude='native_test' \
+            ./ _site/
 
-          # Remove files that should not be published.
-          rm -rf _site/.git
-          rm -rf _site/.github
-          rm -rf _site/tests
-          rm -rf _site/tools
-          rm -rf _site/build
-          rm -f _site/native_test
-
-          # Put the newly built WASM files in the site root.
+          # Put the newly built WASM files in the site root
           cp puyoAI_wasm.mjs _site/puyoAI_wasm.mjs
           cp puyoAI_wasm.wasm _site/puyoAI_wasm.wasm
 
