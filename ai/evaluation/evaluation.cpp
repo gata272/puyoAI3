@@ -1,107 +1,134 @@
 #include "evaluation.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
-#include <vector>
+#include <queue>
 
 namespace puyo {
-
 namespace {
 
-double keyValue(const Board& board, const Move& move, const PuyoPair& pair) {
-    // Approximation of ama's "key": how much same-color material is already
-    // connected to the pair's main/sub colors around the target column.
-    double value = 0.0;
-    for (int dx = -1; dx <= 1; ++dx) {
-        int x = move.x + dx;
-        if (x < 0 || x >= BOARD_WIDTH) continue;
-        for (int y = 0; y < VISIBLE_HEIGHT; ++y) {
-            int c = static_cast<int>(board.get(x, y));
-            if (c == pair.main || c == pair.sub) value += 1.0;
-        }
-    }
-    return std::max(0.0, 4.0 - value * 0.25);
+struct QuietResult {
+    int chainCount = 0;
+    int x = 0;
+    int key = 0;
+    Board remain;
+};
+
+bool color(Cell c) {
+    return c != Cell::Empty && c != Cell::Garbage;
 }
 
-double chiValue(const Board& board, int x) {
+int componentSize(const Board& board, int sx, int sy) {
+    const Cell c = board.get(sx, sy);
+    if (!color(c)) return 0;
+    bool seen[BOARD_WIDTH][VISIBLE_HEIGHT]{};
+    std::queue<std::pair<int,int>> q;
+    q.push({sx,sy});
+    seen[sx][sy] = true;
+    int n = 0;
+    while (!q.empty()) {
+        auto [x,y] = q.front(); q.pop(); ++n;
+        constexpr int dx[4] = {1,-1,0,0};
+        constexpr int dy[4] = {0,0,1,-1};
+        for (int d=0; d<4; ++d) {
+            int nx=x+dx[d], ny=y+dy[d];
+            if (nx<0 || nx>=BOARD_WIDTH || ny<0 || ny>=VISIBLE_HEIGHT || seen[nx][ny]) continue;
+            if (board.get(nx,ny)==c) { seen[nx][ny]=true; q.push({nx,ny}); }
+        }
+    }
+    return n;
+}
+
+bool hasTrigger(const Board& board, int x, int y0) {
+    const Cell c = board.get(x,y0);
+    if (!color(c)) return false;
+    for (int y=0; y<VISIBLE_HEIGHT; ++y) {
+        if (board.get(x,y)==c && componentSize(board,x,y)>=4) return true;
+    }
+    return false;
+}
+
+int chiValue(const std::array<int, BOARD_WIDTH>& heights, int x) {
+    int chi = 0;
+    if (x < 5) {
+        for (int i=x+1; i<6; ++i) {
+            if (heights[i] > heights[x]) break;
+            ++chi;
+        }
+        for (int i=x+1; i<6; ++i) {
+            if (heights[i] >= heights[x]) break;
+            ++chi;
+        }
+    }
+    if (x > 0) {
+        for (int i=x-1; i>=0; --i) {
+            if (heights[i] > heights[x]) break;
+            ++chi;
+        }
+        for (int i=x-1; i>=0; --i) {
+            if (heights[i] >= heights[x]) break;
+            ++chi;
+        }
+    }
+    return chi;
+}
+
+// Direct port of ama's quiet::generate/search idea.  `drop` is the maximum
+// number of same-colour single puyos to add at one column before a trigger.
+std::vector<QuietResult> quietSearch(const Board& board, int drop) {
+    std::vector<QuietResult> out;
     const auto h = board.heights();
-    if (x < 0 || x >= BOARD_WIDTH) return 0.0;
-
-    double value = 0.0;
-    int base = h[x];
-
-    for (int d = 1; d < BOARD_WIDTH; ++d) {
-        int lx = x - d;
-        int rx = x + d;
-        if (lx >= 0) value += std::max(0, base - h[lx]);
-        if (rx < BOARD_WIDTH) value += std::max(0, base - h[rx]);
+    int xmin=2, xmax=2;
+    for (int x=3; x<6; ++x) {
+        if (h[x] > 11) break;
+        ++xmax;
     }
-    return value;
-}
-
-double quietScore(
-    const Board& board,
-    const Weights& w,
-    const std::vector<PuyoPair>& pieces,
-    int depth
-) {
-    Features f = extractStaticFeatures(board);
-    double best = -std::numeric_limits<double>::infinity();
-
-    if (depth <= 0 || pieces.empty()) {
-        return f.chain * w.chain
-             + f.y * w.y
-             + f.key * w.key
-             + f.chi * w.chi
-             + f.link2 * w.link2
-             + f.link3 * w.link3;
+    for (int x=1; x>=0; --x) {
+        if (h[x] > 11) break;
+        --xmin;
     }
 
-    const PuyoPair& pair = pieces.front();
-
-    for (int rot = 0; rot < 4; ++rot) {
-        for (int x = 0; x < BOARD_WIDTH; ++x) {
-            int y = Simulator::findDropY(board, pair, x, rot);
-            if (y < 0) continue;
-
-            Move m{x, rot, true};
-            SimulationResult sim = Simulator::drop(board, pair, m);
-            if (sim.gameOver && !sim.allClear) continue;
-
-            // Quiescence search follows tactical moves first: placements
-            // which immediately produce a chain are the primary candidates.
-            if (sim.chains == 0 && depth == 1) continue;
-
-            const auto h = sim.board.heights();
-            double chain = sim.chains;
-            double yValue = h[x];
-            double key = keyValue(board, m, pair);
-            double chi = chiValue(sim.board, x);
-
-            double q =
-                chain * w.chain +
-                yValue * w.y +
-                key * w.key +
-                chi * w.chi +
-                extractStaticFeatures(sim.board).link2 * w.link2 +
-                extractStaticFeatures(sim.board).link3 * w.link3;
-
-            if (depth > 1 && !pieces.empty()) {
-                std::vector<PuyoPair> rest(
-                    pieces.begin() + 1, pieces.end()
-                );
-                q += 0.85 * quietScore(sim.board, w, rest, depth - 1);
+    for (int x=xmin; x<=xmax; ++x) {
+        if (x<0 || x>=6) continue;
+        const int maxDrop = std::min(drop, 12-h[x]);
+        if (maxDrop<=0) continue;
+        for (int c=1; c<=4; ++c) {
+            Board plan = board;
+            for (int n=1; n<=maxDrop; ++n) {
+                plan.set(x, h[x]+n-1, static_cast<Cell>(c));
+                if (hasTrigger(plan, x, h[x]+n-1)) {
+                    QuietResult r;
+                    r.chainCount = 1;
+                    r.x=x;
+                    r.key=n;
+                    r.remain=plan;
+                    out.push_back(r);
+                    break;
+                }
             }
-
-            best = std::max(best, q);
         }
     }
+    return out;
+}
 
-    if (!std::isfinite(best)) {
-        return f.link2 * w.link2 + f.link3 * w.link3;
+double quietScore(const Board& board, const Weights& w, int drop) {
+    double best = -std::numeric_limits<double>::infinity();
+    const auto h = board.heights();
+    for (const auto& q : quietSearch(board, drop)) {
+        const auto f = extractStaticFeatures(q.remain);
+        const int chi = chiValue(h, q.x);
+        const double score =
+            q.chainCount * w.chain +
+            h[q.x] * w.y +
+            q.key * w.key +
+            chi * w.chi +
+            f.link2 * w.link2 +
+            f.link3 * w.link3;
+        best = std::max(best, score);
     }
-    return best;
+    return std::isfinite(best) ? best : 0.0;
 }
 
 } // namespace
@@ -112,48 +139,38 @@ double evaluate(
     const EvaluationContext& context
 ) {
     const Features f = extractStaticFeatures(board);
-
     double score =
+        f.form * weights.form +
         f.shape * weights.shape +
         f.well * weights.well +
         f.bump * weights.bump +
-        f.form * weights.form +
         f.link2 * weights.link2 +
         f.link3 * weights.link3 +
         f.waste14 * weights.waste14 +
         f.side * weights.side +
         f.nuisance * weights.nuisance;
 
-    if (!context.lookahead.empty()) {
-        score += quietScore(
-            board,
-            weights,
-            context.lookahead,
-            context.quiescenceDepth
-        );
+    // ama's beam evaluator always runs quiet search with a tactical drop
+    // depth of 3.  Keep the parameter configurable for benchmarking/tuning.
+    if (context.quiescenceDepth > 0) {
+        score += quietScore(board, weights, context.quiescenceDepth);
     }
-
     return score;
 }
 
 double actionPenalty(
     const Board& before,
     const SimulationResult& result,
+    const Move& move,
     const Weights& weights
 ) {
     const Features a = extractStaticFeatures(before);
     const Features b = extractStaticFeatures(result.board);
-
-    // "tear": loss of useful links. This is an explicit approximation of
-    // ama's action-level tear feature and is kept separate from board eval.
-    const double tear =
-        std::max(0.0, (a.link2 + a.link3) - (b.link2 + b.link3));
-
-    // "waste": material spent without producing a chain.
-    const double waste =
-        result.chains == 0 ? 1.0 : 0.0;
-
-    return tear * weights.tear + waste * weights.waste;
+    const double tear = std::max(0.0, (a.link2 + a.link3) - (b.link2 + b.link3));
+    // ama uses the number of popped puyos as its waste action feature.
+    const double waste = static_cast<double>(result.erased);
+    const double movement = std::abs(move.x - 2) + std::min(move.rotation, 4 - move.rotation);
+    return (tear + 0.25 * movement) * weights.tear + waste * weights.waste;
 }
 
 } // namespace puyo

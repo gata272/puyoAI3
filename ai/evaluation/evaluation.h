@@ -10,7 +10,7 @@ namespace puyo {
 
 struct EvaluationContext {
     std::vector<PuyoPair> lookahead;
-    int quiescenceDepth = 1;
+    int quiescenceDepth = 3;
 };
 
 double evaluate(
@@ -22,6 +22,7 @@ double evaluate(
 double actionPenalty(
     const Board& before,
     const SimulationResult& result,
+    const Move& move,
     const Weights& weights
 );
 
