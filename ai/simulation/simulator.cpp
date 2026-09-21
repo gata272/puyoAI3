@@ -18,7 +18,7 @@ bool sameColor(Cell c) {
     return c != Cell::Empty && c != Cell::Garbage;
 }
 
-std::vector<Coord> coordsFor(const PuyoPair& p, int x, int y, int rotation) {
+std::vector<Coord> coordsFor(const PuyoPair&, int x, int y, int rotation) {
     int sx = x;
     int sy = y;
 
@@ -212,6 +212,10 @@ int Simulator::resolve(Board& board, int& score, int& erased) {
 
     gravity(board);
     return chains;
+}
+
+int Simulator::resolveBoard(Board& board, int& score, int& erased) {
+    return resolve(board, score, erased);
 }
 
 SimulationResult Simulator::drop(
