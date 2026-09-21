@@ -1,4 +1,4 @@
-/* PuyoAI3 browser bridge
+/* PuyoAI10 trigger-transfer browser bridge
  * - Keeps the existing simulator/online UI untouched.
  * - Sends the current board and the next three pairs to the WASM AI.
  * - The WASM AI uses GTR for the opening plan and then Beam Search +
@@ -11,7 +11,10 @@
         WORKER_PATH: './puyo-ai-worker-wasm.js',
         TICK_MS: 120,
         WIDTH: 6,
-        HEIGHT: 14
+        HEIGHT: 14,
+        DEFAULT_DEPTH: 3,
+        DEFAULT_BEAM_WIDTH: 24,
+        STORAGE_KEY: 'puyoAI.searchSettings'
     };
 
     const STATE = {
@@ -22,6 +25,20 @@
         turn: 0,
         timer: null
     };
+
+
+    function getSearchSettings() {
+        const fallback = { depth: CONFIG.DEFAULT_DEPTH, beamWidth: CONFIG.DEFAULT_BEAM_WIDTH };
+        try {
+            const saved = JSON.parse(localStorage.getItem(CONFIG.STORAGE_KEY) || 'null');
+            return {
+                depth: Number.isFinite(saved?.depth) ? Math.max(1, Math.min(50, Math.trunc(saved.depth))) : fallback.depth,
+                beamWidth: Number.isFinite(saved?.beamWidth) ? Math.max(1, Math.min(500, Math.trunc(saved.beamWidth))) : fallback.beamWidth
+            };
+        } catch (_) {
+            return fallback;
+        }
+    }
 
     function status(text) {
         const el = document.getElementById('ai-status');
@@ -97,6 +114,24 @@
         return result.buffer;
     }
 
+    function readStoredAIWeights() {
+        try {
+            const saved = JSON.parse(localStorage.getItem('puyoAI.developerWeights') || 'null');
+            return Array.isArray(saved)
+                ? saved.map(v => Number.isFinite(Number(v)) ? Number(v) : null)
+                : null;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function applyStoredAIWeights() {
+        const values = readStoredAIWeights();
+        if (values && STATE.worker && STATE.workerReady) {
+            STATE.worker.postMessage({ type: 'weights', values });
+        }
+    }
+
     function initWorker() {
         if (STATE.worker) return;
 
@@ -111,11 +146,19 @@
             if (msg.type === 'ready') {
                 STATE.workerReady = true;
                 status('WASM AI 準備完了');
+                applyStoredAIWeights();
+                if (typeof global.requestAIWeights === 'function') global.requestAIWeights();
                 return;
             }
 
             if (msg.type === 'log') {
                 console.log('[AI]', msg.message);
+                return;
+            }
+            if (msg.type === 'weights') {
+                if (typeof global.renderDeveloperWeights === 'function') {
+                    global.renderDeveloperWeights(msg.weights || []);
+                }
                 return;
             }
 
@@ -183,9 +226,8 @@
         const pieces = makePieces();
         if (pieces.length === 0) return;
 
-        // The GTR planner requires three pairs. After that, two additional
-        // pieces are sufficient for the search; if the queue is temporarily
-        // short, simply wait for the next tick.
+        // The GTR planner requires three pairs. The post-GTR search can use
+        // up to three total pairs (current + two lookahead).
         if (STATE.turn < 3 && pieces.length < 3) return;
 
         STATE.busy = true;
@@ -195,9 +237,18 @@
                 : 'AI: 盤面評価中...'
         );
 
+        const searchSettings = getSearchSettings();
+        let debug = false;
+        try {
+            debug = localStorage.getItem('puyoAI.debugMode') === 'true';
+        } catch (_) {}
+
         STATE.worker.postMessage({
             type: 'think',
             turn: STATE.turn,
+            depth: searchSettings.depth,
+            beamWidth: searchSettings.beamWidth,
+            debug,
             boardBuffer: makeBoardBuffer(),
             pieceBuffer: makePieceBuffer(pieces)
         });
@@ -213,6 +264,55 @@
 
         status('WASM AI 待機中');
     }
+
+    global.loadAISearchSettings = function () {
+        const settings = getSearchSettings();
+        const depth = document.getElementById('ai-depth');
+        const beam = document.getElementById('ai-beam');
+        if (depth) depth.value = settings.depth;
+        if (beam) beam.value = settings.beamWidth;
+    };
+
+    global.saveAISearchSettings = function () {
+        const read = (id, fallback, min, max) => {
+            const value = Number.parseInt(document.getElementById(id)?.value, 10);
+            return Number.isFinite(value) ? Math.max(min, Math.min(max, value)) : fallback;
+        };
+        const settings = {
+            depth: read('ai-depth', CONFIG.DEFAULT_DEPTH, 1, 50),
+            beamWidth: read('ai-beam', CONFIG.DEFAULT_BEAM_WIDTH, 1, 500)
+        };
+        try {
+            localStorage.setItem(CONFIG.STORAGE_KEY, JSON.stringify(settings));
+        } catch (_) {}
+        const depth = document.getElementById('ai-depth');
+        const beam = document.getElementById('ai-beam');
+        if (depth) depth.value = settings.depth;
+        if (beam) beam.value = settings.beamWidth;
+        status(`AI設定: depth ${settings.depth} / beam ${settings.beamWidth}`);
+    };
+
+    global.requestAIWeights = function () {
+        if (!STATE.worker) initWorker();
+        if (!STATE.worker || !STATE.workerReady) return;
+        STATE.worker.postMessage({ type: 'weights', values: readStoredAIWeights() || [] });
+    };
+
+    global.applyAIWeights = function (values) {
+        if (!STATE.worker) initWorker();
+        if (!STATE.worker || !STATE.workerReady) return;
+        STATE.worker.postMessage({
+            type: 'weights',
+            values: Array.isArray(values) ? values : []
+        });
+    };
+
+    global.resetAIWeights = function () {
+        try { localStorage.removeItem('puyoAI.developerWeights'); } catch (_) {}
+        if (!STATE.worker) initWorker();
+        if (!STATE.worker || !STATE.workerReady) return;
+        STATE.worker.postMessage({ type: 'weights', reset: true, values: [] });
+    };
 
     global.toggleAI = function () {
         STATE.autoEnabled = !STATE.autoEnabled;
